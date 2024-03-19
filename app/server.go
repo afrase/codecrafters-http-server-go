@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -20,12 +21,34 @@ type Request struct {
 
 type Response struct {
 	StatusCode int
+	Headers    map[string]string
 	Body       string
 }
 
 func (r Response) String() string {
-	statusText := statusCodeToString[r.StatusCode]
-	return fmt.Sprintf("HTTP/1.1 %d %s\r\n\r\n%s", r.StatusCode, statusText, r.Body)
+	statusText, ok := statusCodeToString[r.StatusCode]
+	if !ok {
+		statusText = "Unknown"
+	}
+
+	// No headers so assume plain text result.
+	if r.Headers == nil {
+		r.Headers = map[string]string{
+			"Content-Type": "text/plain",
+		}
+	}
+
+	// Figure out content length if not set.
+	if _, ok = r.Headers["Content-Length"]; !ok {
+		r.Headers["Content-Length"] = strconv.Itoa(len(r.Body))
+	}
+
+	var headerString strings.Builder
+	for k, v := range r.Headers {
+		headerString.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+	}
+
+	return fmt.Sprintf("HTTP/1.1 %d %s\r\n%s\r\n%s", r.StatusCode, statusText, headerString.String(), r.Body)
 }
 
 func main() {
@@ -61,11 +84,10 @@ func handleConnection(conn net.Conn) {
 		os.Exit(1)
 	}
 
-	var response Response
-	if request.Path == "/" {
-		response = Response{StatusCode: 200}
-	} else {
-		response = Response{StatusCode: 404}
+	response := Response{StatusCode: 200}
+	if strings.HasPrefix(request.Path, "/echo") {
+		pathParts := strings.SplitN(request.Path, "/echo/", 2)
+		response.Body = pathParts[1]
 	}
 
 	_, err = stream.WriteString(response.String())
