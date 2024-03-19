@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -13,6 +14,7 @@ import (
 var statusCodeToString = map[int]string{
 	200: "OK",
 	404: "Not Found",
+	500: "Internal Server Error",
 }
 
 type Request struct {
@@ -55,6 +57,11 @@ func (r Response) String() string {
 }
 
 func main() {
+	var dir string
+	if len(os.Args) > 1 && os.Args[1] == "--directory" {
+		dir = os.Args[2]
+	}
+
 	l, err := net.Listen("tcp", ":4221")
 	if err != nil {
 		fmt.Println("Failed to bind to port 4221")
@@ -69,11 +76,11 @@ func main() {
 		}
 
 		// Spawn a go thread
-		go handleConnection(conn)
+		go handleConnection(conn, dir)
 	}
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(conn net.Conn, dir string) {
 	stream := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	defer func(conn net.Conn) {
 		err := conn.Close()
@@ -95,6 +102,11 @@ func handleConnection(conn net.Conn) {
 	} else if request.Path == "/user-agent" {
 		userAgent := request.Headers["User-Agent"]
 		response.Body = userAgent
+	} else if strings.HasPrefix(request.Path, "/files") && dir != "" {
+		pathParts := strings.SplitN(request.Path, "/files/", 2)
+		fileName := pathParts[1]
+		path := filepath.Join(dir, fileName)
+		handleFileRequest(path, &response)
 	} else if request.Path != "/" {
 		response.StatusCode = 404
 	}
@@ -110,6 +122,29 @@ func handleConnection(conn net.Conn) {
 		fmt.Println("Failed to flush to socket")
 		os.Exit(1)
 	}
+}
+
+func handleFileRequest(path string, r *Response) {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		r.StatusCode = 404
+		return
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		r.StatusCode = 500
+		fmt.Println("failed to open file: ", err.Error())
+		return
+	}
+
+	all, err := io.ReadAll(file)
+	if err != nil {
+		r.StatusCode = 500
+		fmt.Println("failed to read file: ", err.Error())
+		return
+	}
+
+	r.Body = string(all)
 }
 
 func parseRequest(reader *bufio.Reader) (Request, error) {
