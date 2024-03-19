@@ -145,6 +145,9 @@ func handleFileRequest(path string, r *Response) {
 	}
 
 	r.Body = string(all)
+	r.Headers = map[string]string{
+		"Content-Type": "application/octet-stream",
+	}
 }
 
 func parseRequest(reader *bufio.Reader) (Request, error) {
