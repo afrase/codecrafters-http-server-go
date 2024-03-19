@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -15,8 +16,10 @@ var statusCodeToString = map[int]string{
 }
 
 type Request struct {
-	Method string
-	Path   string
+	Method  string
+	Path    string
+	Headers map[string]string
+	Body    string
 }
 
 type Response struct {
@@ -88,6 +91,9 @@ func handleConnection(conn net.Conn) {
 	if strings.HasPrefix(request.Path, "/echo") {
 		pathParts := strings.SplitN(request.Path, "/echo/", 2)
 		response.Body = pathParts[1]
+	} else if request.Path == "/user-agent" {
+		userAgent := request.Headers["User-Agent"]
+		response.Body = userAgent
 	} else if request.Path != "/" {
 		response.StatusCode = 404
 	}
@@ -106,11 +112,47 @@ func handleConnection(conn net.Conn) {
 }
 
 func parseRequest(reader *bufio.Reader) (Request, error) {
-	first, err := reader.ReadString('\n')
-	if err != nil {
-		return Request{}, err
+	request := Request{
+		Headers: make(map[string]string),
 	}
 
-	parts := strings.Split(first, " ")
-	return Request{Method: parts[0], Path: parts[1]}, nil
+	firstLine, err := reader.ReadString('\n')
+	if err != nil {
+		return Request{}, fmt.Errorf("malformed HTTP request")
+	}
+	parts := strings.Split(firstLine, " ")
+	request.Method = parts[0]
+	request.Path = parts[1]
+
+	for {
+		curLine, err := reader.ReadString('\n')
+		if curLine == "\r\n" {
+			break
+		}
+		if err == io.EOF {
+			return request, nil
+		} else if err != nil {
+			return Request{}, err
+		}
+
+		headerParts := strings.SplitN(curLine, ":", 2)
+		request.Headers[headerParts[0]] = strings.TrimSpace(headerParts[1])
+	}
+
+	// If the content length is set read the body.
+	contentLenStr, ok := request.Headers["Content-Length"]
+	if !ok {
+		return request, nil
+	}
+
+	contentLen, _ := strconv.Atoi(contentLenStr)
+	buf := make([]byte, contentLen)
+	// This probably should read in chunks.
+	_, err = io.ReadFull(reader, buf)
+	if err != nil {
+		return request, err
+	}
+	request.Body = string(buf)
+
+	return request, nil
 }
