@@ -13,7 +13,9 @@ import (
 
 var statusCodeToString = map[int]string{
 	200: "OK",
+	201: "Created",
 	404: "Not Found",
+	405: "Method Not Allowed",
 	500: "Internal Server Error",
 }
 
@@ -38,9 +40,12 @@ func (r Response) String() string {
 
 	// No headers so assume plain text result.
 	if r.Headers == nil {
-		r.Headers = map[string]string{
-			"Content-Type": "text/plain",
-		}
+		r.Headers = make(map[string]string)
+	}
+
+	// Make sure content-type is always set.
+	if _, ok = r.Headers["Content-Type"]; !ok {
+		r.Headers["Content-Type"] = "text/plain"
 	}
 
 	// Figure out content length if not set.
@@ -89,29 +94,37 @@ func handleConnection(conn net.Conn, dir string) {
 		}
 	}(conn)
 
-	request, err := parseRequest(stream.Reader)
+	resp := Response{StatusCode: 200}
+	req, err := parseRequest(stream.Reader)
 	if err != nil {
-		fmt.Println("Failed to parse request: ", err.Error())
+		fmt.Println("Failed to parse req: ", err.Error())
 		os.Exit(1)
 	}
 
-	response := Response{StatusCode: 200}
-	if strings.HasPrefix(request.Path, "/echo") {
-		pathParts := strings.SplitN(request.Path, "/echo/", 2)
-		response.Body = pathParts[1]
-	} else if request.Path == "/user-agent" {
-		userAgent := request.Headers["User-Agent"]
-		response.Body = userAgent
-	} else if strings.HasPrefix(request.Path, "/files") && dir != "" {
-		pathParts := strings.SplitN(request.Path, "/files/", 2)
+	if strings.HasPrefix(req.Path, "/echo") {
+		pathParts := strings.SplitN(req.Path, "/echo/", 2)
+		resp.Body = pathParts[1]
+	} else if req.Path == "/user-agent" {
+		userAgent := req.Headers["User-Agent"]
+		resp.Body = userAgent
+	} else if strings.HasPrefix(req.Path, "/files") && dir != "" {
+		pathParts := strings.SplitN(req.Path, "/files/", 2)
 		fileName := pathParts[1]
 		path := filepath.Join(dir, fileName)
-		handleFileRequest(path, &response)
-	} else if request.Path != "/" {
-		response.StatusCode = 404
+		switch req.Method {
+		case "GET":
+			handleFileGet(path, &resp)
+		case "POST":
+			handleFilePost(path, &req, &resp)
+		default:
+			resp.Headers = map[string]string{"Allow": "GET, POST"}
+			resp.StatusCode = 405
+		}
+	} else if req.Path != "/" {
+		resp.StatusCode = 404
 	}
 
-	_, err = stream.WriteString(response.String())
+	_, err = stream.WriteString(resp.String())
 	if err != nil {
 		fmt.Println("Failed to write to socket: ", err.Error())
 		os.Exit(1)
@@ -124,28 +137,61 @@ func handleConnection(conn net.Conn, dir string) {
 	}
 }
 
-func handleFileRequest(path string, r *Response) {
+func handleFilePost(path string, req *Request, resp *Response) {
+	file, err := os.Create(path)
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
+	if err != nil {
+		resp.StatusCode = 500
+		fmt.Println("failed to create file: ", err.Error())
+		return
+	}
+
+	_, err = file.WriteString(req.Body)
+	if err != nil {
+		resp.StatusCode = 500
+		fmt.Println("failed to write file: ", err.Error())
+		return
+	}
+
+	err = file.Sync()
+	if err != nil {
+		resp.StatusCode = 500
+		fmt.Println("failed to commit file: ", err.Error())
+		return
+	}
+
+	resp.StatusCode = 201
+}
+
+func handleFileGet(path string, resp *Response) {
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		r.StatusCode = 404
+		resp.StatusCode = 404
 		return
 	}
 
 	file, err := os.Open(path)
+	defer func(file *os.File) {
+		_ = file.Close()
+	}(file)
+
 	if err != nil {
-		r.StatusCode = 500
+		resp.StatusCode = 500
 		fmt.Println("failed to open file: ", err.Error())
 		return
 	}
 
 	all, err := io.ReadAll(file)
 	if err != nil {
-		r.StatusCode = 500
+		resp.StatusCode = 500
 		fmt.Println("failed to read file: ", err.Error())
 		return
 	}
 
-	r.Body = string(all)
-	r.Headers = map[string]string{
+	resp.Body = string(all)
+	resp.Headers = map[string]string{
 		"Content-Type": "application/octet-stream",
 	}
 }
