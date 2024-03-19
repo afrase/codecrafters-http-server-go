@@ -68,6 +68,7 @@ func main() {
 			os.Exit(1)
 		}
 
+		// Spawn a go thread
 		go handleConnection(conn)
 	}
 }
