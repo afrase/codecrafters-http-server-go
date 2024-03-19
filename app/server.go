@@ -88,6 +88,8 @@ func handleConnection(conn net.Conn) {
 	if strings.HasPrefix(request.Path, "/echo") {
 		pathParts := strings.SplitN(request.Path, "/echo/", 2)
 		response.Body = pathParts[1]
+	} else if request.Path != "/" {
+		response.StatusCode = 404
 	}
 
 	_, err = stream.WriteString(response.String())
